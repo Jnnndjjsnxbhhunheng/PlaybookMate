@@ -10,14 +10,17 @@ Role is passed as X-Role header ("pm" | "algo") — replace with real auth in pr
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -125,7 +128,14 @@ async def create_hs(req: CreateHSRequest) -> dict:
         req_file = path / "requirement.md"
         req_file.write_text(req.requirement_doc, encoding="utf-8")
 
-    return {"hs_id": req.name, "path": str(path)}
+    cli_cmd = (
+        f"praxis new-hs --name {req.name} --domain {req.domain}"
+        + (f' --description "{req.description}"' if req.description else "")
+        + (f" --metric {req.primary_metric}" if req.primary_metric != "score" else "")
+        + (f" --budget-seconds {req.budget_wall_seconds}" if req.budget_wall_seconds != 3600 else "")
+        + (f" --budget-tokens {req.budget_llm_tokens}" if req.budget_llm_tokens != 500_000 else "")
+    )
+    return {"hs_id": req.name, "path": str(path), "cli_equivalent": cli_cmd}
 
 
 @app.get("/api/hs/{hs_id}")
@@ -171,7 +181,122 @@ async def get_hs(hs_id: str) -> dict:
         "policy_code": policy_code,
         "requirement_doc": requirement_doc,
         "promotion_blockers": ws.validate_for_promotion(hs_id),
+        # CLI commands that map to common UI actions
+        "cli_commands": {
+            "run":      f"praxis run --hs {hs_id}",
+            "dry_run":  f"praxis run --hs {hs_id} --dry-run",
+            "status":   f"praxis status --hs {hs_id}",
+            "promote":  f"praxis promote --hs {hs_id}",
+            "refresh":  "praxis refresh",
+        },
     }
+
+
+# ---------------------------------------------------------------------------
+# API: render prompt (dry-run, shows PROMPT.md without spawning agent)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/hs/{hs_id}/render-prompt")
+async def render_prompt(hs_id: str) -> dict:
+    """Return the rendered PROMPT.md and the exact shell command to run it."""
+    try:
+        config = ws.load_config(hs_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"HS '{hs_id}' not found")
+
+    from ..protocol.orchestrator import Orchestrator
+    orch = Orchestrator(ws)
+    # dry_run writes PROMPT.md but does not spawn claude
+    result = orch.run_hs(hs_id, dry_run=True)
+    prompt_path = result.run_dir / "PROMPT.md"
+    prompt_text = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
+
+    import os
+    cc_bin = os.environ.get("PRAXIS_CC_BIN", "claude")
+
+    return {
+        "prompt": prompt_text,
+        "prompt_path": str(prompt_path),
+        "cli_command": f"praxis run --hs {hs_id}",
+        "raw_codex_command": f"{cc_bin} --print {prompt_path}",
+        "run_dir": str(result.run_dir),
+    }
+
+
+# ---------------------------------------------------------------------------
+# API: run (spawns claude / codex — identical to `praxis run --hs {hs_id}`)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/hs/{hs_id}/run")
+async def run_hs(
+    hs_id: str,
+    dry_run: bool = False,
+    x_role: str = Header(default="algo"),
+) -> dict:
+    """
+    Equivalent to: praxis run --hs {hs_id} [--dry-run]
+
+    Frontend calls this; it does exactly what the CLI does.
+    For long runs, use /api/hs/{hs_id}/run/stream for live output.
+    """
+    if x_role != "algo":
+        raise HTTPException(403, "Only algo engineers can trigger runs")
+
+    import os
+    cc_bin = os.environ.get("PRAXIS_CC_BIN", "claude")
+
+    # shell out to the CLI itself — UI and terminal are truly equivalent
+    cmd = [sys.executable, "-m", "praxis.cli.main", "run", "--hs", hs_id]
+    if dry_run:
+        cmd.append("--dry-run")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30 if dry_run else 7200,
+            cwd=str(RUNS_ROOT.parent),
+        )
+        return {
+            "cli_command": f"praxis run --hs {hs_id}" + (" --dry-run" if dry_run else ""),
+            "raw_codex_command": f"{cc_bin} --print <PROMPT.md>",
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+            "ok": result.returncode == 0,
+        }
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "Run timed out")
+
+
+@app.get("/api/hs/{hs_id}/run/stream")
+async def run_hs_stream(hs_id: str, x_role: str = Header(default="algo")) -> StreamingResponse:
+    """
+    Same as /run but streams stdout line-by-line as Server-Sent Events.
+    Frontend terminal view subscribes to this for live output.
+    """
+    if x_role != "algo":
+        raise HTTPException(403, "Only algo engineers can trigger runs")
+
+    async def _stream():
+        cmd = [sys.executable, "-m", "praxis.cli.main", "run", "--hs", hs_id]
+        yield f"data: $ praxis run --hs {hs_id}\n\n"
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(RUNS_ROOT.parent),
+        )
+        assert proc.stdout
+        async for line in proc.stdout:
+            text = line.decode(errors="replace").rstrip()
+            yield f"data: {text}\n\n"
+        await proc.wait()
+        yield f"data: [exit {proc.returncode}]\n\n"
+        yield "data: __done__\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 # ---------------------------------------------------------------------------
