@@ -9,6 +9,7 @@ Commands:
     praxis promote    Validate and promote best policy to staging
     praxis refresh    Re-mine all logs and refresh Knowledge Layer
     praxis mcp-config Print MCP server config block for Claude Code
+    praxis web        Start the web UI (product + algo dashboard)
 """
 
 from __future__ import annotations
@@ -176,6 +177,19 @@ def refresh() -> None:
     mp = MetaPrompt()
     mp.refresh()
     console.print("[green]✓[/green] Knowledge Layer refreshed.")
+
+
+@cli.command("web")
+@click.option("--host", default="0.0.0.0", help="Bind host")
+@click.option("--port", default=8000, help="Bind port")
+@click.option("--reload", is_flag=True, help="Auto-reload on file changes (dev mode)")
+def web(host: str, port: int, reload: bool) -> None:
+    """Start the Praxis web UI."""
+    from ..web.server import serve
+    console.print(f"Starting Praxis web UI at [cyan]http://{host}:{port}[/cyan]")
+    console.print("  [dim]Product: open in browser, switch to 🗂 Product role[/dim]")
+    console.print("  [dim]Algo:    switch to ⚙ Algorithm role for review controls[/dim]")
+    serve(host=host, port=port, reload=reload)
 
 
 @cli.command("mcp-config")

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Praxis — Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body class="h-full bg-zinc-50 text-zinc-900 font-sans">
+
+<!-- Header -->
+<header class="bg-white border-b border-zinc-200 sticky top-0 z-40">
+  <div class="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <span class="text-xl font-bold tracking-tight">Praxis</span>
+      <span class="text-zinc-400 text-sm">Heuristic System OS</span>
+    </div>
+    <nav class="flex items-center gap-6">
+      <a href="/" class="text-sm font-medium text-zinc-900">Dashboard</a>
+      <a href="/review" class="text-sm text-zinc-500 hover:text-zinc-800" data-role="algo">Review Queue</a>
+      <div id="role-switcher"></div>
+    </nav>
+  </div>
+</header>
+
+<!-- Main -->
+<main class="max-w-6xl mx-auto px-6 py-8">
+
+  <!-- PM: New HS request -->
+  <div data-role="pm" class="mb-8">
+    <div class="flex items-center justify-between mb-4">
+      <h1 class="text-2xl font-bold">Heuristic Systems</h1>
+      <button onclick="openNewHSModal()"
+        class="inline-flex items-center gap-2 bg-zinc-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-zinc-700 transition-colors">
+        + 提需求
+      </button>
+    </div>
+  </div>
+
+  <!-- ALGO header (no button) -->
+  <div data-role="algo" class="mb-8">
+    <h1 class="text-2xl font-bold mb-1">Heuristic Systems</h1>
+    <p class="text-sm text-zinc-500">实时查看所有 HS 的演化状态</p>
+  </div>
+
+  <!-- Stats bar -->
+  <div id="stats-bar" class="grid grid-cols-4 gap-4 mb-8"></div>
+
+  <!-- HS cards -->
+  <div id="hs-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5"></div>
+
+  <div id="empty-state" class="hidden text-center py-24 text-zinc-400">
+    <div class="text-5xl mb-4">📋</div>
+    <p class="text-lg font-medium">还没有 Heuristic System</p>
+    <p class="text-sm mt-1">点击「提需求」创建第一个</p>
+  </div>
+</main>
+
+<!-- New HS Modal -->
+<div id="modal-new-hs" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+    <div class="px-6 py-5 border-b border-zinc-100 flex items-center justify-between">
+      <h2 class="text-lg font-semibold">提新 HS 需求</h2>
+      <button onclick="closeNewHSModal()" class="text-zinc-400 hover:text-zinc-700 text-xl leading-none">×</button>
+    </div>
+    <form id="form-new-hs" class="px-6 py-5 space-y-5" onsubmit="submitNewHS(event)">
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 mb-1">HS 名称 <span class="text-red-400">*</span></label>
+          <input name="name" required placeholder="e.g. customer_triage"
+            class="w-full border border-zinc-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400" />
+          <p class="text-xs text-zinc-400 mt-1">snake_case，全局唯一</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 mb-1">领域 <span class="text-red-400">*</span></label>
+          <select name="domain" required
+            class="w-full border border-zinc-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400">
+            <option value="">选择领域…</option>
+            <option value="ticket_routing">工单路由</option>
+            <option value="marketing_rules">营销规则</option>
+            <option value="content_moderation">内容审核</option>
+            <option value="pricing">定价策略</option>
+            <option value="custom">自定义</option>
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">优化目标指标</label>
+        <input name="primary_metric" placeholder="e.g. routing_accuracy" value="score"
+          class="w-full border border-zinc-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400" />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">业务背景描述 <span class="text-red-400">*</span></label>
+        <textarea name="description" required rows="2" placeholder="一两句话说明这个 HS 要解决什么问题"
+          class="w-full border border-zinc-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400 resize-none"></textarea>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">详细需求文档 (Markdown)</label>
+        <textarea name="requirement_doc" rows="8"
+          placeholder="## 背景&#10;&#10;## 期望行为&#10;&#10;## 反例（哪些情况不能发生）&#10;&#10;## 验收标准"
+          class="w-full border border-zinc-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-zinc-400 resize-y"></textarea>
+        <p class="text-xs text-zinc-400 mt-1">算法工程师会把这份文档里的反例转化为回归用例</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 mb-1">运行时限 (秒)</label>
+          <input name="budget_wall_seconds" type="number" value="3600"
+            class="w-full border border-zinc-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 mb-1">Token 预算</label>
+          <input name="budget_llm_tokens" type="number" value="500000"
+            class="w-full border border-zinc-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400" />
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">标签 (逗号分隔)</label>
+        <input name="tags" placeholder="e.g. l1-support, realtime"
+          class="w-full border border-zinc-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400" />
+      </div>
+
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" onclick="closeNewHSModal()"
+          class="px-4 py-2 text-sm text-zinc-600 hover:text-zinc-900">取消</button>
+        <button type="submit" id="btn-submit-hs"
+          class="px-5 py-2 bg-zinc-900 text-white text-sm rounded-lg hover:bg-zinc-700 transition-colors disabled:opacity-50">
+          提交需求
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Load dashboard
+// ---------------------------------------------------------------------------
+async function loadDashboard() {
+  const list = await apiFetch("/api/hs");
+
+  // stats
+  const statsBar = document.getElementById("stats-bar");
+  const total = list.length;
+  const active = list.filter(h => h.phase && h.phase !== "idle").length;
+  const promoted = list.filter(h => h.phase === "promoting").length;
+  const blocked = list.filter(h => h.phase === "blocked").length;
+  statsBar.innerHTML = [
+    statCard("全部 HS", total, "zinc"),
+    statCard("活跃中", active, "blue"),
+    statCard("待上线", promoted, "emerald"),
+    statCard("被阻塞", blocked, "red"),
+  ].join("");
+
+  // cards
+  const grid = document.getElementById("hs-grid");
+  const empty = document.getElementById("empty-state");
+  if (list.length === 0) {
+    grid.innerHTML = "";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  grid.innerHTML = list.map(hsCard).join("");
+}
+
+function statCard(label, value, color) {
+  const colors = {
+    zinc: "bg-white border-zinc-200 text-zinc-900",
+    blue: "bg-blue-50 border-blue-100 text-blue-700",
+    emerald: "bg-emerald-50 border-emerald-100 text-emerald-700",
+    red: "bg-red-50 border-red-100 text-red-700",
+  };
+  return `<div class="rounded-xl border ${colors[color]} px-5 py-4">
+    <div class="text-2xl font-bold">${value}</div>
+    <div class="text-sm mt-0.5 opacity-70">${label}</div>
+  </div>`;
+}
+
+function hsCard(h) {
+  const score = h.best_score != null ? h.best_score.toFixed(4) : "—";
+  const tokens = h.cumulative_tokens ? (h.cumulative_tokens / 1000).toFixed(1) + "k" : "0";
+  return `
+    <a href="/hs/${h.hs_id}"
+      class="block bg-white rounded-xl border border-zinc-200 p-5 hover:shadow-md hover:border-zinc-300 transition-all cursor-pointer group">
+      <div class="flex items-start justify-between mb-3">
+        <div>
+          <div class="font-semibold text-zinc-900 group-hover:text-zinc-700">${h.hs_id}</div>
+          <div class="text-xs text-zinc-400 mt-0.5">${h.domain || ""}</div>
+        </div>
+        ${phaseBadge(h.phase || "idle")}
+      </div>
+      <p class="text-sm text-zinc-500 mb-4 line-clamp-2">${h.description || ""}</p>
+      <div class="flex items-center justify-between text-xs text-zinc-400">
+        <span>📊 ${h.total_trials || 0} trials</span>
+        <span>最优 ${score}</span>
+        <span>🪙 ${tokens} tokens</span>
+      </div>
+      ${h.tags && h.tags.length ? `<div class="mt-3 flex flex-wrap gap-1">
+        ${h.tags.map(t => `<span class="px-2 py-0.5 bg-zinc-100 text-zinc-500 rounded text-xs">${t}</span>`).join("")}
+      </div>` : ""}
+    </a>`;
+}
+
+// ---------------------------------------------------------------------------
+// New HS modal
+// ---------------------------------------------------------------------------
+function openNewHSModal() {
+  document.getElementById("modal-new-hs").classList.remove("hidden");
+}
+function closeNewHSModal() {
+  document.getElementById("modal-new-hs").classList.add("hidden");
+  document.getElementById("form-new-hs").reset();
+}
+
+async function submitNewHS(e) {
+  e.preventDefault();
+  const form = e.target;
+  const btn = document.getElementById("btn-submit-hs");
+  btn.disabled = true;
+  btn.textContent = "提交中…";
+
+  const data = {
+    name: form.name.value.trim(),
+    domain: form.domain.value,
+    description: form.description.value.trim(),
+    primary_metric: form.primary_metric.value.trim() || "score",
+    budget_wall_seconds: parseInt(form.budget_wall_seconds.value),
+    budget_llm_tokens: parseInt(form.budget_llm_tokens.value),
+    requirement_doc: form.requirement_doc.value.trim(),
+    tags: form.tags.value.split(",").map(s => s.trim()).filter(Boolean),
+  };
+
+  try {
+    const res = await apiFetch("/api/hs", { method: "POST", body: data });
+    toast(`HS "${res.hs_id}" 已创建`, "success");
+    closeNewHSModal();
+    loadDashboard();
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "提交需求";
+  }
+}
+
+// close modal on backdrop click
+document.getElementById("modal-new-hs").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeNewHSModal();
+});
+
+loadDashboard();
+</script>
+</body>
+</html>

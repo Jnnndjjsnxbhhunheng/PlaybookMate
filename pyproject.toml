@@ -18,6 +18,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "croniter>=2.0",
     "networkx>=3.3",     # ontology graph in knowledge layer
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
 ]
 
 [project.scripts]
