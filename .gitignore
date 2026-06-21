@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+.env
+.env.*
+
+# HS runtime data — commits only the schema, not the runs
+runs/*/
+!runs/.gitkeep
+
+# but DO commit hs_config.yaml and regression sets of committed HS
+!runs/**/hs_config.yaml
+!runs/**/regression_set/
+!runs/**/README.md
