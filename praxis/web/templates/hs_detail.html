@@ -85,35 +85,22 @@
   <!-- Terminal (algo) -->
   <div id="tab-terminal" class="tab-panel hidden" data-role="algo">
     <div class="bg-zinc-950 rounded-xl overflow-hidden border border-zinc-800">
-      <!-- toolbar -->
-      <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-        <div class="flex items-center gap-2">
-          <div class="w-3 h-3 rounded-full bg-red-500"></div>
-          <div class="w-3 h-3 rounded-full bg-amber-400"></div>
-          <div class="w-3 h-3 rounded-full bg-emerald-500"></div>
-          <span class="text-zinc-400 text-xs ml-2 cli-hint" id="terminal-cmd-label">praxis run --hs …</span>
-        </div>
-        <div class="flex items-center gap-3">
-          <button onclick="launchAgent()"
-            class="text-xs px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium">
-            ▶ 启动 Agent（后台自驱）
-          </button>
-        </div>
+      <div class="flex items-center px-4 py-3 border-b border-zinc-800 gap-2">
+        <div class="w-3 h-3 rounded-full bg-red-500"></div>
+        <div class="w-3 h-3 rounded-full bg-amber-400"></div>
+        <div class="w-3 h-3 rounded-full bg-emerald-500"></div>
+        <span class="text-zinc-400 text-xs ml-2 cli-hint" id="terminal-cmd-label">praxis run --hs …</span>
       </div>
-      <!-- output -->
-      <div id="terminal-output"
-        class="px-4 py-4 text-xs text-green-400 h-80 overflow-y-auto space-y-0.5 leading-5">
-        <div class="text-zinc-500">在本地终端启动 agent（推荐，可交互）:</div>
-        <div class="text-zinc-300 cli-hint" id="terminal-hint-cmd"></div>
+      <div class="px-4 py-4 text-xs leading-6">
+        <div class="text-zinc-500 mb-1">在本地终端执行：</div>
+        <div class="text-green-400 cli-hint" id="terminal-hint-cmd"></div>
+        <div class="text-zinc-600 mt-3">— agent 自动读取 AGENTS.md / CLAUDE.md，完整自驱整个 trial 循环 —</div>
       </div>
     </div>
     <p class="mt-3 text-xs text-zinc-400">
-      Agent（Codex / Claude Code）会读取本工作区的
-      <code class="bg-zinc-100 px-1 rounded cli-hint">AGENTS.md</code> /
-      <code class="bg-zinc-100 px-1 rounded cli-hint">CLAUDE.md</code>，
-      <strong>自己驱动整个循环</strong>——Praxis 不在外面反复调它。
-      网页的「启动 Agent」是后台无人值守模式（<code class="cli-hint">codex exec</code>），
-      输出写入 <code class="cli-hint">agent.log</code>；想交互就用上面的命令在本地终端跑。
+      Praxis 把终端直接交给 <code class="bg-zinc-100 px-1 rounded cli-hint">codex</code> /
+      <code class="bg-zinc-100 px-1 rounded cli-hint">claude</code>（<code class="cli-hint">os.execvp</code>），
+      之后完全由 agent 自驱——写 policy.py、记 trials.jsonl、做简化，直到 Stop Rule 触发。
     </p>
   </div>
 
@@ -383,58 +370,6 @@ async function loadPrompt() {
 function copyPrompt() {
   if (!_promptText) { toast("先点「重新渲染」", "info"); return; }
   navigator.clipboard.writeText(_promptText).then(() => toast("Brief 已复制", "success"));
-}
-
-// ---------------------------------------------------------------------------
-// Terminal: launch a headless background agent, then tail agent.log
-// ---------------------------------------------------------------------------
-let _isRunning = false;
-
-function termLog(msg, cls = "text-green-400") {
-  const out = document.getElementById("terminal-output");
-  const line = document.createElement("div");
-  line.className = cls;
-  line.textContent = msg;
-  out.appendChild(line);
-  out.scrollTop = out.scrollHeight;
-}
-
-function clearTerminal() {
-  document.getElementById("terminal-output").innerHTML = "";
-}
-
-async function launchAgent() {
-  if (_isRunning) return;
-  _isRunning = true;
-  clearTerminal();
-  termLog("启动后台 agent（自驱模式）…", "text-zinc-400");
-  try {
-    const data = await apiFetch(`/api/hs/${hsId}/run`, { method: "POST" });
-    termLog(`▶ ${data.agent} 已启动 (pid ${data.pid})`, "text-emerald-400");
-    termLog(`$ ${data.launch_command}`, "text-zinc-400");
-    termLog(`日志: ${data.log_path} — 跟随输出中…`, "text-zinc-500");
-    streamLog();
-  } catch (e) {
-    _isRunning = false;
-    termLog("无法在服务器启动: " + e.message, "text-amber-400");
-    termLog("可在本地终端运行（推荐，可交互）:", "text-zinc-400");
-    termLog("$ " + (_launchInteractive || `cd runs/${hsId} && codex`), "text-zinc-300");
-  }
-}
-
-function streamLog() {
-  const es = new EventSource(`/api/hs/${hsId}/run/stream`);
-  es.onmessage = (e) => {
-    if (e.data === "__done__") {
-      es.close();
-      _isRunning = false;
-      termLog("[日志跟随结束]", "text-zinc-500");
-      loadHS();  // refresh trials the agent produced
-      return;
-    }
-    termLog(e.data, e.data.startsWith("$") ? "text-zinc-400" : "text-green-400");
-  };
-  es.onerror = () => { es.close(); _isRunning = false; termLog("[连接断开]", "text-zinc-500"); };
 }
 
 // ---------------------------------------------------------------------------

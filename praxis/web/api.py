@@ -10,17 +10,15 @@ Role is passed as X-Role header ("pm" | "algo") — replace with real auth in pr
 
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -196,21 +194,10 @@ async def get_hs(hs_id: str) -> dict:
 # API: agent brief (the AGENTS.md / CLAUDE.md the agent self-drives from)
 # ---------------------------------------------------------------------------
 
-def _agent_cmd(hs_id: str, headless: bool = True) -> tuple[list[str], str]:
-    """Build the launch command for the configured agent."""
-    import os
-    agent = os.environ.get("PRAXIS_AGENT", "codex")
-    kickoff = "Read AGENTS.md/CLAUDE.md and run the heuristic-learning loop to completion."
-    if agent == "claude":
-        cmd = ["claude", "-p", kickoff] if headless else ["claude"]
-    else:
-        cmd = ["codex", "exec", kickoff] if headless else ["codex"]
-    return cmd, agent
-
-
 @app.get("/api/hs/{hs_id}/brief")
 async def get_brief(hs_id: str) -> dict:
     """Return AGENTS.md content + the exact command to launch the agent."""
+    import os
     try:
         config = ws.load_config(hs_id)
     except FileNotFoundError:
@@ -221,87 +208,15 @@ async def get_brief(hs_id: str) -> dict:
     brief_path = ws_dir / "AGENTS.md"
     brief = brief_path.read_text(encoding="utf-8") if brief_path.exists() else ""
 
-    interactive, agent = _agent_cmd(hs_id, headless=False)
-    headless, _ = _agent_cmd(hs_id, headless=True)
+    agent = os.environ.get("PRAXIS_AGENT", "codex")
+    launch_cmd = f"cd {ws_dir} && {agent}"
     return {
         "brief": brief,
         "brief_path": str(brief_path),
         "agent": agent,
-        "launch_interactive": f"cd {ws_dir} && {' '.join(interactive)}",
-        "launch_headless": f"cd {ws_dir} && {' '.join(headless)}",
+        "launch_interactive": launch_cmd,
         "praxis_command": f"praxis run --hs {hs_id}",
     }
-
-
-# ---------------------------------------------------------------------------
-# API: run — launch a HEADLESS background agent that self-drives the loop.
-# This does NOT drive the agent from Python; it just starts codex/claude in
-# the workspace and gets out of the way (like `praxis run-all --launch`).
-# ---------------------------------------------------------------------------
-
-@app.post("/api/hs/{hs_id}/run")
-async def run_hs(hs_id: str, x_role: str = Header(default="algo")) -> dict:
-    """Spawn a headless agent in the workspace; it drives its own loop."""
-    if x_role != "algo":
-        raise HTTPException(403, "Only algo engineers can launch agents")
-
-    ws_dir = RUNS_ROOT / hs_id
-    if not (ws_dir / "hs_config.yaml").exists():
-        raise HTTPException(404, f"HS '{hs_id}' not found")
-
-    ws.write_agent_brief(ws.load_config(hs_id))
-    cmd, agent = _agent_cmd(hs_id, headless=True)
-    log_path = ws_dir / "agent.log"
-
-    try:
-        log = open(log_path, "w")
-        proc = subprocess.Popen(cmd, cwd=str(ws_dir), stdout=log, stderr=subprocess.STDOUT)
-    except FileNotFoundError:
-        raise HTTPException(
-            424,
-            f"'{cmd[0]}' not found on the server. Install {agent}, or run locally: "
-            f"cd {ws_dir} && {' '.join(cmd)}",
-        )
-
-    return {
-        "agent": agent,
-        "pid": proc.pid,
-        "log_path": str(log_path),
-        "launch_command": f"cd {ws_dir} && {' '.join(cmd)}",
-        "note": "Headless agent launched. It self-drives the loop; tail agent.log for output.",
-    }
-
-
-@app.get("/api/hs/{hs_id}/run/stream")
-async def run_hs_stream(hs_id: str, x_role: str = Header(default="algo")) -> StreamingResponse:
-    """Tail the agent.log produced by a launched headless agent, as SSE."""
-    if x_role != "algo":
-        raise HTTPException(403, "Only algo engineers can view agent output")
-
-    log_path = RUNS_ROOT / hs_id / "agent.log"
-
-    async def _stream():
-        yield f"data: $ tail -f {log_path}\n\n"
-        if not log_path.exists():
-            yield "data: (no agent.log yet — launch the agent first)\n\n"
-            yield "data: __done__\n\n"
-            return
-        with open(log_path, encoding="utf-8", errors="replace") as f:
-            # emit existing content, then follow for a bounded window
-            for line in f:
-                yield f"data: {line.rstrip()}\n\n"
-            idle = 0
-            while idle < 60:  # follow up to ~60s of inactivity
-                line = f.readline()
-                if line:
-                    idle = 0
-                    yield f"data: {line.rstrip()}\n\n"
-                else:
-                    idle += 1
-                    await asyncio.sleep(1)
-        yield "data: __done__\n\n"
-
-    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 # ---------------------------------------------------------------------------

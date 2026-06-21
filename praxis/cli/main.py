@@ -9,7 +9,6 @@ the way, then reads back the files the agent produced.
 Commands:
     praxis new-hs     Create a workspace (writes AGENTS.md + CLAUDE.md)
     praxis run        Hand the terminal to codex/claude in a workspace
-    praxis run-all    Unattended batch: one headless agent per HS
     praxis status     Show lifecycle summary for one or all HS
     praxis promote    Validate and promote best policy to staging
     praxis refresh    Re-mine all logs and refresh Knowledge Layer
@@ -74,9 +73,8 @@ def new_hs(
 @cli.command("run")
 @click.option("--hs", required=True, help="HS ID to run")
 @click.option("--agent", default=None, help="Agent to launch: codex | claude (default: $PRAXIS_AGENT or codex)")
-@click.option("--headless", is_flag=True, help="Non-interactive: use `codex exec` / `claude -p`")
 @click.option("--print-brief", is_flag=True, help="Just print the agent brief and the launch command; don't launch")
-def run(hs: str, agent: str | None, headless: bool, print_brief: bool) -> None:
+def run(hs: str, agent: str | None, print_brief: bool) -> None:
     """
     Hand the terminal over to Codex / Claude Code in the HS workspace.
 
@@ -95,18 +93,7 @@ def run(hs: str, agent: str | None, headless: bool, print_brief: bool) -> None:
     ws.write_agent_brief(config)
 
     agent = agent or os.environ.get("PRAXIS_AGENT", "codex")
-    kickoff = (
-        f"Read AGENTS.md (or CLAUDE.md) in this directory and execute the heuristic-"
-        f"learning loop to completion: run trials, maintain trials.jsonl / policy.py / "
-        f"summary.csv / regression_set, do the mandatory simplification phase, and stop "
-        f"only when a Stop Rule fires."
-    )
-
-    # build the launch command for the chosen agent
-    if agent == "claude":
-        cmd = ["claude", "-p", kickoff] if headless else ["claude"]
-    else:  # codex
-        cmd = ["codex", "exec", kickoff] if headless else ["codex"]
+    cmd = ["claude"] if agent == "claude" else ["codex"]
 
     brief_path = ws_dir / "AGENTS.md"
     if print_brief:
@@ -130,41 +117,6 @@ def run(hs: str, agent: str | None, headless: bool, print_brief: bool) -> None:
         )
         sys.exit(127)
 
-
-@cli.command("run-all")
-@click.option("--agent", default=None, help="Agent: codex | claude (default: $PRAXIS_AGENT or codex)")
-@click.option("--launch", is_flag=True, help="Actually launch headless agents in background (else just print commands)")
-def run_all(agent: str | None, launch: bool) -> None:
-    """
-    Unattended batch — like Jiayi's Atari57 run: each HS gets its own headless
-    agent that self-drives to completion. By default prints the commands; pass
-    --launch to spawn them in the background.
-    """
-    import os
-    import subprocess
-
-    hs_list = ws.list_hs()
-    if not hs_list:
-        console.print("[yellow]No HS workspaces found.[/yellow]")
-        return
-
-    agent = agent or os.environ.get("PRAXIS_AGENT", "codex")
-    kickoff = "Read AGENTS.md/CLAUDE.md and run the heuristic-learning loop to completion."
-
-    for hs in hs_list:
-        ws_dir = ws.runs_root / hs
-        ws.write_agent_brief(ws.load_config(hs))
-        cmd = (["claude", "-p", kickoff] if agent == "claude"
-               else ["codex", "exec", kickoff])
-        if launch:
-            log = open(ws_dir / "agent.log", "w")
-            subprocess.Popen(cmd, cwd=str(ws_dir), stdout=log, stderr=subprocess.STDOUT)
-            console.print(f"  [green]▶[/green] {hs} — launched ({agent}), logging to {ws_dir}/agent.log")
-        else:
-            console.print(f"  cd {ws_dir} && {' '.join(cmd)}")
-
-    if not launch:
-        console.print("\n[dim]Add --launch to spawn these headless agents in the background.[/dim]")
 
 
 @cli.command("status")
