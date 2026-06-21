@@ -24,20 +24,43 @@ Praxis extends Jiayi Guo's heuristic learning protocol from RL environments to r
 └─────────────────────────────────────────────┘
 ```
 
-## Quick start
+## How it runs — the agent drives, not Praxis
+
+Praxis does **not** call the LLM in a loop. Following Jiayi Guo's model, the
+agent (Codex CLI or Claude Code) reads a brief and self-drives the entire
+heuristic-learning loop — writing `policy.py`, running trials, appending
+`trials.jsonl`, doing the simplification phase, looping until a stop rule.
+
+`praxis new-hs` writes an **`AGENTS.md`** (auto-read by Codex) and a
+**`CLAUDE.md`** (auto-read by Claude Code) into the workspace. You then just
+launch the agent in that directory and get out of the way.
 
 ```bash
 pip install -e ".[dev]"
 
-# create a new heuristic system workspace
+# 1. create a workspace (writes AGENTS.md + CLAUDE.md with the full loop brief)
 praxis new-hs --name customer_triage --domain ticket_routing
 
-# run an evolution cycle
-praxis run --hs customer_triage
+# 2. launch the agent — it self-drives the whole loop
+cd runs/customer_triage && codex          # or: claude
+#   equivalently, Praxis hands the terminal over for you:
+praxis run --hs customer_triage           # default agent via $PRAXIS_AGENT (codex)
+praxis run --hs customer_triage --agent claude
+praxis run --hs customer_triage --print-brief   # just show the brief + launch cmd
 
-# promote best policy to staging
+# 3. unattended batch — one headless agent per HS (Jiayi's Atari57 style)
+praxis run-all --launch
+
+# 4. inspect what the agent produced, then promote
+praxis status
 praxis promote --hs customer_triage --env staging
 ```
+
+The web UI (`praxis web`) is a **viewer + collaboration surface**, not a
+driver: PMs file requirements/feedback, algo engineers review trials and add
+regression cases, and the "Agent Brief" tab shows the exact `AGENTS.md` plus
+the `cd … && codex` command. Its "启动 Agent" button spawns a *headless*
+background agent (`codex exec`) — still the agent driving its own loop.
 
 ## Directory layout
 

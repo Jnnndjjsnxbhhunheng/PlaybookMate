@@ -93,6 +93,24 @@ def test_add_regression_requires_algo_role(client) -> None:
     assert r.status_code == 201
 
 
+def test_new_hs_writes_agent_briefs(client, tmp_path) -> None:
+    client.post("/api/hs", json={"name": "brief_hs", "domain": "ticket_routing"})
+    assert (tmp_path / "brief_hs" / "AGENTS.md").exists()
+    assert (tmp_path / "brief_hs" / "CLAUDE.md").exists()
+
+
+def test_brief_endpoint(client) -> None:
+    client.post("/api/hs", json={"name": "b2", "domain": "ticket_routing", "description": "d"})
+    r = client.get("/api/hs/b2/brief")
+    assert r.status_code == 200
+    data = r.json()
+    # the brief tells the agent to self-drive the whole loop
+    assert "You drive the" in data["brief"]
+    assert data["agent"] in ("codex", "claude")
+    assert "&&" in data["launch_interactive"]
+    assert data["praxis_command"] == "praxis run --hs b2"
+
+
 def test_review_queue_empty(client) -> None:
     r = client.get("/api/review")
     assert r.status_code == 200

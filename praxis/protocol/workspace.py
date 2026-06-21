@@ -106,7 +106,22 @@ class WorkspaceManager:
                 encoding="utf-8",
             )
 
+        # write the self-driven agent brief (AGENTS.md for Codex, CLAUDE.md for Claude Code)
+        self.write_agent_brief(config)
+
         return ws
+
+    def write_agent_brief(self, config: HSConfig) -> None:
+        """(Re)generate AGENTS.md + CLAUDE.md, injecting current knowledge-layer hints."""
+        from ..protocol.agent_brief import write_briefs
+        ws = self.runs_root / config.hs_id
+        hints: list[str] = []
+        try:
+            from ..knowledge.meta_prompt import MetaPrompt
+            hints = MetaPrompt(runs_root=self.runs_root).get_hints(config.domain, config.tags)
+        except Exception:
+            pass
+        write_briefs(ws, config, hints)
 
     def load_config(self, hs_id: str) -> HSConfig:
         path = self.runs_root / hs_id / "hs_config.yaml"

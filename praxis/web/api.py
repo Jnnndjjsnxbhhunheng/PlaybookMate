@@ -184,7 +184,7 @@ async def get_hs(hs_id: str) -> dict:
         # CLI commands that map to common UI actions
         "cli_commands": {
             "run":      f"praxis run --hs {hs_id}",
-            "dry_run":  f"praxis run --hs {hs_id} --dry-run",
+            "brief":    f"praxis run --hs {hs_id} --print-brief",
             "status":   f"praxis status --hs {hs_id}",
             "promote":  f"praxis promote --hs {hs_id}",
             "refresh":  "praxis refresh",
@@ -193,107 +193,112 @@ async def get_hs(hs_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# API: render prompt (dry-run, shows PROMPT.md without spawning agent)
+# API: agent brief (the AGENTS.md / CLAUDE.md the agent self-drives from)
 # ---------------------------------------------------------------------------
 
-@app.get("/api/hs/{hs_id}/render-prompt")
-async def render_prompt(hs_id: str) -> dict:
-    """Return the rendered PROMPT.md and the exact shell command to run it."""
+def _agent_cmd(hs_id: str, headless: bool = True) -> tuple[list[str], str]:
+    """Build the launch command for the configured agent."""
+    import os
+    agent = os.environ.get("PRAXIS_AGENT", "codex")
+    kickoff = "Read AGENTS.md/CLAUDE.md and run the heuristic-learning loop to completion."
+    if agent == "claude":
+        cmd = ["claude", "-p", kickoff] if headless else ["claude"]
+    else:
+        cmd = ["codex", "exec", kickoff] if headless else ["codex"]
+    return cmd, agent
+
+
+@app.get("/api/hs/{hs_id}/brief")
+async def get_brief(hs_id: str) -> dict:
+    """Return AGENTS.md content + the exact command to launch the agent."""
     try:
         config = ws.load_config(hs_id)
     except FileNotFoundError:
         raise HTTPException(404, f"HS '{hs_id}' not found")
 
-    from ..protocol.orchestrator import Orchestrator
-    orch = Orchestrator(ws)
-    # dry_run writes PROMPT.md but does not spawn claude
-    result = orch.run_hs(hs_id, dry_run=True)
-    prompt_path = result.run_dir / "PROMPT.md"
-    prompt_text = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
+    ws.write_agent_brief(config)  # refresh with latest knowledge hints
+    ws_dir = RUNS_ROOT / hs_id
+    brief_path = ws_dir / "AGENTS.md"
+    brief = brief_path.read_text(encoding="utf-8") if brief_path.exists() else ""
 
-    import os
-    cc_bin = os.environ.get("PRAXIS_CC_BIN", "claude")
-
+    interactive, agent = _agent_cmd(hs_id, headless=False)
+    headless, _ = _agent_cmd(hs_id, headless=True)
     return {
-        "prompt": prompt_text,
-        "prompt_path": str(prompt_path),
-        "cli_command": f"praxis run --hs {hs_id}",
-        "raw_codex_command": f"{cc_bin} --print {prompt_path}",
-        "run_dir": str(result.run_dir),
+        "brief": brief,
+        "brief_path": str(brief_path),
+        "agent": agent,
+        "launch_interactive": f"cd {ws_dir} && {' '.join(interactive)}",
+        "launch_headless": f"cd {ws_dir} && {' '.join(headless)}",
+        "praxis_command": f"praxis run --hs {hs_id}",
     }
 
 
 # ---------------------------------------------------------------------------
-# API: run (spawns claude / codex — identical to `praxis run --hs {hs_id}`)
+# API: run — launch a HEADLESS background agent that self-drives the loop.
+# This does NOT drive the agent from Python; it just starts codex/claude in
+# the workspace and gets out of the way (like `praxis run-all --launch`).
 # ---------------------------------------------------------------------------
 
 @app.post("/api/hs/{hs_id}/run")
-async def run_hs(
-    hs_id: str,
-    dry_run: bool = False,
-    x_role: str = Header(default="algo"),
-) -> dict:
-    """
-    Equivalent to: praxis run --hs {hs_id} [--dry-run]
-
-    Frontend calls this; it does exactly what the CLI does.
-    For long runs, use /api/hs/{hs_id}/run/stream for live output.
-    """
+async def run_hs(hs_id: str, x_role: str = Header(default="algo")) -> dict:
+    """Spawn a headless agent in the workspace; it drives its own loop."""
     if x_role != "algo":
-        raise HTTPException(403, "Only algo engineers can trigger runs")
+        raise HTTPException(403, "Only algo engineers can launch agents")
 
-    import os
-    cc_bin = os.environ.get("PRAXIS_CC_BIN", "claude")
+    ws_dir = RUNS_ROOT / hs_id
+    if not (ws_dir / "hs_config.yaml").exists():
+        raise HTTPException(404, f"HS '{hs_id}' not found")
 
-    # shell out to the CLI itself — UI and terminal are truly equivalent
-    cmd = [sys.executable, "-m", "praxis.cli.main", "run", "--hs", hs_id]
-    if dry_run:
-        cmd.append("--dry-run")
+    ws.write_agent_brief(ws.load_config(hs_id))
+    cmd, agent = _agent_cmd(hs_id, headless=True)
+    log_path = ws_dir / "agent.log"
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30 if dry_run else 7200,
-            cwd=str(RUNS_ROOT.parent),
+        log = open(log_path, "w")
+        proc = subprocess.Popen(cmd, cwd=str(ws_dir), stdout=log, stderr=subprocess.STDOUT)
+    except FileNotFoundError:
+        raise HTTPException(
+            424,
+            f"'{cmd[0]}' not found on the server. Install {agent}, or run locally: "
+            f"cd {ws_dir} && {' '.join(cmd)}",
         )
-        return {
-            "cli_command": f"praxis run --hs {hs_id}" + (" --dry-run" if dry_run else ""),
-            "raw_codex_command": f"{cc_bin} --print <PROMPT.md>",
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "exit_code": result.returncode,
-            "ok": result.returncode == 0,
-        }
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "Run timed out")
+
+    return {
+        "agent": agent,
+        "pid": proc.pid,
+        "log_path": str(log_path),
+        "launch_command": f"cd {ws_dir} && {' '.join(cmd)}",
+        "note": "Headless agent launched. It self-drives the loop; tail agent.log for output.",
+    }
 
 
 @app.get("/api/hs/{hs_id}/run/stream")
 async def run_hs_stream(hs_id: str, x_role: str = Header(default="algo")) -> StreamingResponse:
-    """
-    Same as /run but streams stdout line-by-line as Server-Sent Events.
-    Frontend terminal view subscribes to this for live output.
-    """
+    """Tail the agent.log produced by a launched headless agent, as SSE."""
     if x_role != "algo":
-        raise HTTPException(403, "Only algo engineers can trigger runs")
+        raise HTTPException(403, "Only algo engineers can view agent output")
+
+    log_path = RUNS_ROOT / hs_id / "agent.log"
 
     async def _stream():
-        cmd = [sys.executable, "-m", "praxis.cli.main", "run", "--hs", hs_id]
-        yield f"data: $ praxis run --hs {hs_id}\n\n"
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=str(RUNS_ROOT.parent),
-        )
-        assert proc.stdout
-        async for line in proc.stdout:
-            text = line.decode(errors="replace").rstrip()
-            yield f"data: {text}\n\n"
-        await proc.wait()
-        yield f"data: [exit {proc.returncode}]\n\n"
+        yield f"data: $ tail -f {log_path}\n\n"
+        if not log_path.exists():
+            yield "data: (no agent.log yet — launch the agent first)\n\n"
+            yield "data: __done__\n\n"
+            return
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            # emit existing content, then follow for a bounded window
+            for line in f:
+                yield f"data: {line.rstrip()}\n\n"
+            idle = 0
+            while idle < 60:  # follow up to ~60s of inactivity
+                line = f.readline()
+                if line:
+                    idle = 0
+                    yield f"data: {line.rstrip()}\n\n"
+                else:
+                    idle += 1
+                    await asyncio.sleep(1)
         yield "data: __done__\n\n"
 
     return StreamingResponse(_stream(), media_type="text/event-stream")

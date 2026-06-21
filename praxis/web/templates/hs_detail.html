@@ -66,7 +66,7 @@
   <div class="border-b border-zinc-200 mb-6 flex gap-6">
     <button class="tab-btn active pb-2 text-sm text-zinc-500 hover:text-zinc-800" data-tab="trials">Trial 历史</button>
     <button class="tab-btn pb-2 text-sm text-zinc-500 hover:text-zinc-800" data-tab="terminal" data-role="algo">终端</button>
-    <button class="tab-btn pb-2 text-sm text-zinc-500 hover:text-zinc-800" data-tab="prompt" data-role="algo">Prompt 预览</button>
+    <button class="tab-btn pb-2 text-sm text-zinc-500 hover:text-zinc-800" data-tab="prompt" data-role="algo">Agent Brief</button>
     <button class="tab-btn pb-2 text-sm text-zinc-500 hover:text-zinc-800" data-tab="policy">当前策略</button>
     <button class="tab-btn pb-2 text-sm text-zinc-500 hover:text-zinc-800" data-tab="requirement">需求文档</button>
     <button class="tab-btn pb-2 text-sm text-zinc-500 hover:text-zinc-800" data-tab="regression" data-role="algo">回归集</button>
@@ -94,36 +94,35 @@
           <span class="text-zinc-400 text-xs ml-2 cli-hint" id="terminal-cmd-label">praxis run --hs …</span>
         </div>
         <div class="flex items-center gap-3">
-          <button onclick="runDryRun()"
-            class="text-xs px-3 py-1.5 rounded bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors">
-            Dry Run（只渲染 Prompt）
-          </button>
-          <button onclick="runHS()"
+          <button onclick="launchAgent()"
             class="text-xs px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors font-medium">
-            ▶ Run（启动 Claude / Codex）
+            ▶ 启动 Agent（后台自驱）
           </button>
         </div>
       </div>
       <!-- output -->
       <div id="terminal-output"
         class="px-4 py-4 text-xs text-green-400 h-80 overflow-y-auto space-y-0.5 leading-5">
-        <div class="text-zinc-500">准备就绪。点击 Run 或在本地终端执行:</div>
-        <div class="text-zinc-400" id="terminal-hint-cmd"></div>
+        <div class="text-zinc-500">在本地终端启动 agent（推荐，可交互）:</div>
+        <div class="text-zinc-300 cli-hint" id="terminal-hint-cmd"></div>
       </div>
     </div>
     <p class="mt-3 text-xs text-zinc-400">
-      前端的 <strong>Run</strong> 按钮和本地终端敲命令完全等价——两者都执行
-      <code class="bg-zinc-100 px-1 rounded cli-hint">claude --print PROMPT.md</code>，
-      只是触发方式不同。
+      Agent（Codex / Claude Code）会读取本工作区的
+      <code class="bg-zinc-100 px-1 rounded cli-hint">AGENTS.md</code> /
+      <code class="bg-zinc-100 px-1 rounded cli-hint">CLAUDE.md</code>，
+      <strong>自己驱动整个循环</strong>——Praxis 不在外面反复调它。
+      网页的「启动 Agent」是后台无人值守模式（<code class="cli-hint">codex exec</code>），
+      输出写入 <code class="cli-hint">agent.log</code>；想交互就用上面的命令在本地终端跑。
     </p>
   </div>
 
-  <!-- Prompt 预览 (algo) -->
+  <!-- Prompt 预览 (algo) — 即 agent 自动读取的 AGENTS.md / CLAUDE.md -->
   <div id="tab-prompt" class="tab-panel hidden" data-role="algo">
     <div class="flex items-center justify-between mb-4">
       <div>
-        <p class="text-sm text-zinc-500">这是 Praxis 渲染后喂给 Claude Code / Codex CLI 的完整 Prompt。</p>
-        <p class="text-xs text-zinc-400 mt-0.5">等价于: <code class="cli-hint bg-zinc-100 px-1 rounded" id="prompt-cli-cmd"></code></p>
+        <p class="text-sm text-zinc-500">这是 agent 自驱所读取的 <code class="cli-hint bg-zinc-100 px-1 rounded">AGENTS.md</code> / <code class="cli-hint bg-zinc-100 px-1 rounded">CLAUDE.md</code>。</p>
+        <p class="text-xs text-zinc-400 mt-0.5">本地启动: <code class="cli-hint bg-zinc-100 px-1 rounded" id="prompt-cli-cmd"></code></p>
       </div>
       <div class="flex gap-2">
         <button onclick="loadPrompt()"
@@ -132,7 +131,7 @@
         </button>
         <button onclick="copyPrompt()"
           class="text-xs border border-zinc-300 px-3 py-1.5 rounded-lg hover:bg-zinc-100 transition-colors">
-          复制 Prompt
+          复制 Brief
         </button>
       </div>
     </div>
@@ -326,8 +325,8 @@ async function loadHS() {
           class="text-zinc-600 hover:text-zinc-300 text-xs shrink-0">⎘</button>
       </div>`).join("");
     // terminal hint
-    document.getElementById("terminal-hint-cmd").textContent = "$ " + (cli_commands.run || "");
-    document.getElementById("terminal-cmd-label").textContent = cli_commands.run || "";
+    document.getElementById("terminal-hint-cmd").textContent = `$ cd runs/${hsId} && codex`;
+    document.getElementById("terminal-cmd-label").textContent = `cd runs/${hsId} && codex`;
   }
 
   // blockers
@@ -360,29 +359,34 @@ async function loadHS() {
 }
 
 // ---------------------------------------------------------------------------
-// Prompt preview
+// Brief preview (AGENTS.md / CLAUDE.md the agent self-drives from)
 // ---------------------------------------------------------------------------
+let _launchInteractive = "";
 async function loadPrompt() {
-  document.getElementById("prompt-content").textContent = "渲染中…";
+  document.getElementById("prompt-content").textContent = "加载中…";
   try {
-    const data = await apiFetch(`/api/hs/${hsId}/render-prompt`);
-    _promptText = data.prompt;
-    document.getElementById("prompt-content").textContent = data.prompt;
-    document.getElementById("prompt-cli-cmd").textContent = data.cli_command;
-    document.getElementById("prompt-file-path").textContent = data.prompt_path;
-    document.getElementById("prompt-raw-cmd").textContent = data.raw_codex_command;
+    const data = await apiFetch(`/api/hs/${hsId}/brief`);
+    _promptText = data.brief;
+    _launchInteractive = data.launch_interactive;
+    document.getElementById("prompt-content").textContent = data.brief;
+    document.getElementById("prompt-cli-cmd").textContent = data.launch_interactive;
+    document.getElementById("prompt-file-path").textContent = data.brief_path;
+    document.getElementById("prompt-raw-cmd").textContent = data.praxis_command;
+    // also seed the terminal hint
+    const hint = document.getElementById("terminal-hint-cmd");
+    if (hint) hint.textContent = "$ " + data.launch_interactive;
   } catch (e) {
-    document.getElementById("prompt-content").textContent = "渲染失败: " + e.message;
+    document.getElementById("prompt-content").textContent = "加载失败: " + e.message;
   }
 }
 
 function copyPrompt() {
   if (!_promptText) { toast("先点「重新渲染」", "info"); return; }
-  navigator.clipboard.writeText(_promptText).then(() => toast("Prompt 已复制", "success"));
+  navigator.clipboard.writeText(_promptText).then(() => toast("Brief 已复制", "success"));
 }
 
 // ---------------------------------------------------------------------------
-// Terminal: run / dry-run
+// Terminal: launch a headless background agent, then tail agent.log
 // ---------------------------------------------------------------------------
 let _isRunning = false;
 
@@ -399,48 +403,38 @@ function clearTerminal() {
   document.getElementById("terminal-output").innerHTML = "";
 }
 
-async function runDryRun() {
-  if (_isRunning) return;
-  clearTerminal();
-  termLog(`$ praxis run --hs ${hsId} --dry-run`, "text-zinc-300");
-  termLog("渲染 Prompt 中（不启动 agent）…", "text-zinc-500");
-  try {
-    const data = await apiFetch(`/api/hs/${hsId}/run?dry_run=true`, { method: "POST" });
-    (data.stdout || "").split("\n").filter(Boolean).forEach(l => termLog(l, "text-zinc-300"));
-    if (data.stderr) data.stderr.split("\n").filter(Boolean).forEach(l => termLog(l, "text-amber-400"));
-    termLog(`[exit ${data.exit_code}]`, data.ok ? "text-emerald-500" : "text-red-400");
-    termLog("提示: 切换到「Prompt 预览」标签查看完整 Prompt", "text-zinc-500");
-  } catch (e) {
-    termLog("Error: " + e.message, "text-red-400");
-  }
-}
-
-function runHS() {
+async function launchAgent() {
   if (_isRunning) return;
   _isRunning = true;
   clearTerminal();
-  termLog(`$ praxis run --hs ${hsId}`, "text-zinc-300");
-  termLog("连接中…", "text-zinc-500");
+  termLog("启动后台 agent（自驱模式）…", "text-zinc-400");
+  try {
+    const data = await apiFetch(`/api/hs/${hsId}/run`, { method: "POST" });
+    termLog(`▶ ${data.agent} 已启动 (pid ${data.pid})`, "text-emerald-400");
+    termLog(`$ ${data.launch_command}`, "text-zinc-400");
+    termLog(`日志: ${data.log_path} — 跟随输出中…`, "text-zinc-500");
+    streamLog();
+  } catch (e) {
+    _isRunning = false;
+    termLog("无法在服务器启动: " + e.message, "text-amber-400");
+    termLog("可在本地终端运行（推荐，可交互）:", "text-zinc-400");
+    termLog("$ " + (_launchInteractive || `cd runs/${hsId} && codex`), "text-zinc-300");
+  }
+}
 
+function streamLog() {
   const es = new EventSource(`/api/hs/${hsId}/run/stream`);
   es.onmessage = (e) => {
     if (e.data === "__done__") {
       es.close();
       _isRunning = false;
-      termLog("完成。", "text-emerald-400");
-      loadHS();  // refresh trials
+      termLog("[日志跟随结束]", "text-zinc-500");
+      loadHS();  // refresh trials the agent produced
       return;
     }
-    const cls = e.data.startsWith("[exit") ? "text-zinc-400"
-              : e.data.startsWith("Error") ? "text-red-400"
-              : "text-green-400";
-    termLog(e.data, cls);
+    termLog(e.data, e.data.startsWith("$") ? "text-zinc-400" : "text-green-400");
   };
-  es.onerror = () => {
-    es.close();
-    _isRunning = false;
-    termLog("[连接断开]", "text-zinc-500");
-  };
+  es.onerror = () => { es.close(); _isRunning = false; termLog("[连接断开]", "text-zinc-500"); };
 }
 
 // ---------------------------------------------------------------------------

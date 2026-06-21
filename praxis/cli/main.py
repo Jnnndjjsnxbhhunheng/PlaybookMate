@@ -1,10 +1,15 @@
 """
 Praxis CLI — entry point for all developer interactions.
 
+The agent (Codex / Claude Code) drives the whole loop itself by reading the
+AGENTS.md / CLAUDE.md that `new-hs` writes into each workspace. Praxis does
+not call the agent repeatedly — it hands the terminal over and gets out of
+the way, then reads back the files the agent produced.
+
 Commands:
-    praxis new-hs     Create a new heuristic system workspace
-    praxis run        Execute one trial cycle for an HS
-    praxis run-all    Run all registered HS (parallel)
+    praxis new-hs     Create a workspace (writes AGENTS.md + CLAUDE.md)
+    praxis run        Hand the terminal to codex/claude in a workspace
+    praxis run-all    Unattended batch: one headless agent per HS
     praxis status     Show lifecycle summary for one or all HS
     praxis promote    Validate and promote best policy to staging
     praxis refresh    Re-mine all logs and refresh Knowledge Layer
@@ -14,10 +19,8 @@ Commands:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
-from pathlib import Path
 
 import click
 from rich.console import Console
@@ -25,7 +28,6 @@ from rich.table import Table
 
 from ..knowledge.meta_prompt import MetaPrompt
 from ..protocol.lifecycle import LifecycleFSM
-from ..protocol.orchestrator import Orchestrator
 from ..protocol.workspace import HSConfig, WorkspaceManager
 
 console = Console()
@@ -63,55 +65,106 @@ def new_hs(
     )
     path = ws.create(config)
     console.print(f"[green]✓[/green] Created HS workspace: [bold]{path}[/bold]")
-    console.print(f"  Next step: [cyan]praxis run --hs {name}[/cyan]")
+    console.print("  Wrote [bold]AGENTS.md[/bold] (Codex) + [bold]CLAUDE.md[/bold] (Claude Code).")
+    console.print("  Launch the agent — it self-drives the whole loop:")
+    console.print(f"    [cyan]cd {path} && codex[/cyan]   (or [cyan]claude[/cyan])")
+    console.print(f"  Or via Praxis: [cyan]praxis run --hs {name}[/cyan]")
 
 
 @cli.command("run")
 @click.option("--hs", required=True, help="HS ID to run")
-@click.option("--dry-run", is_flag=True, help="Render prompt and exit without spawning agent")
-def run(hs: str, dry_run: bool) -> None:
-    """Execute one trial cycle for an HS."""
-    orch = Orchestrator()
-    console.print(f"Starting trial for [bold]{hs}[/bold]...")
-    result = orch.run_hs(hs, dry_run=dry_run)
+@click.option("--agent", default=None, help="Agent to launch: codex | claude (default: $PRAXIS_AGENT or codex)")
+@click.option("--headless", is_flag=True, help="Non-interactive: use `codex exec` / `claude -p`")
+@click.option("--print-brief", is_flag=True, help="Just print the agent brief and the launch command; don't launch")
+def run(hs: str, agent: str | None, headless: bool, print_brief: bool) -> None:
+    """
+    Hand the terminal over to Codex / Claude Code in the HS workspace.
 
-    if dry_run:
-        prompt_file = result.run_dir / "PROMPT.md"
-        console.print(f"[yellow]dry-run[/yellow] Prompt written to: {prompt_file}")
-        console.print(prompt_file.read_text(encoding="utf-8"))
-        return
+    The agent reads AGENTS.md (Codex) or CLAUDE.md (Claude Code) and drives the
+    WHOLE heuristic-learning loop itself — Praxis does not call it repeatedly.
+    """
+    import os
 
-    if not result.success:
-        console.print(f"[red]✗[/red] Trial failed: {result.error}")
+    ws_dir = ws.runs_root / hs
+    if not (ws_dir / "hs_config.yaml").exists():
+        console.print(f"[red]✗[/red] HS '{hs}' not found. Create it: praxis new-hs --name {hs} ...")
         sys.exit(1)
 
-    t = result.trial
-    assert t is not None
-    delta = t.score.delta
-    delta_str = f" (Δ{delta:+.4f})" if delta is not None else ""
-    console.print(
-        f"[green]✓[/green] Trial #{t.trial_idx} — "
-        f"outcome=[bold]{t.outcome}[/bold] "
-        f"score={t.score.primary:.4f}{delta_str}"
+    # refresh the brief so latest knowledge-layer hints are embedded
+    config = ws.load_config(hs)
+    ws.write_agent_brief(config)
+
+    agent = agent or os.environ.get("PRAXIS_AGENT", "codex")
+    kickoff = (
+        f"Read AGENTS.md (or CLAUDE.md) in this directory and execute the heuristic-"
+        f"learning loop to completion: run trials, maintain trials.jsonl / policy.py / "
+        f"summary.csv / regression_set, do the mandatory simplification phase, and stop "
+        f"only when a Stop Rule fires."
     )
+
+    # build the launch command for the chosen agent
+    if agent == "claude":
+        cmd = ["claude", "-p", kickoff] if headless else ["claude"]
+    else:  # codex
+        cmd = ["codex", "exec", kickoff] if headless else ["codex"]
+
+    brief_path = ws_dir / "AGENTS.md"
+    if print_brief:
+        console.print(f"[bold]Brief:[/bold] {brief_path}\n")
+        console.print(brief_path.read_text(encoding="utf-8"))
+        console.print(f"\n[bold]Launch with:[/bold] [cyan]cd {ws_dir} && {' '.join(cmd)}[/cyan]")
+        return
+
+    console.print(f"Handing terminal to [bold]{agent}[/bold] in [cyan]{ws_dir}[/cyan]")
+    console.print(f"  [dim]The agent self-drives the loop. Ctrl-C to detach.[/dim]\n")
+
+    # true handoff: replace this process with the agent, cwd = workspace
+    try:
+        os.chdir(ws_dir)
+        os.execvp(cmd[0], cmd)
+    except FileNotFoundError:
+        console.print(
+            f"[red]✗[/red] '{cmd[0]}' not found on PATH.\n"
+            f"  Install {agent}, or run manually:\n"
+            f"  [cyan]cd {ws_dir} && {' '.join(cmd)}[/cyan]"
+        )
+        sys.exit(127)
 
 
 @cli.command("run-all")
-@click.option("--parallel", default=4, help="Max parallel agents")
-def run_all(parallel: int) -> None:
-    """Run all registered HS concurrently."""
+@click.option("--agent", default=None, help="Agent: codex | claude (default: $PRAXIS_AGENT or codex)")
+@click.option("--launch", is_flag=True, help="Actually launch headless agents in background (else just print commands)")
+def run_all(agent: str | None, launch: bool) -> None:
+    """
+    Unattended batch — like Jiayi's Atari57 run: each HS gets its own headless
+    agent that self-drives to completion. By default prints the commands; pass
+    --launch to spawn them in the background.
+    """
+    import os
+    import subprocess
+
     hs_list = ws.list_hs()
     if not hs_list:
         console.print("[yellow]No HS workspaces found.[/yellow]")
         return
-    console.print(f"Running {len(hs_list)} HS with max_parallel={parallel}...")
-    orch = Orchestrator()
-    results = asyncio.run(orch.run_many(hs_list, max_parallel=parallel))
-    for r in results:
-        if r.success and r.trial:
-            console.print(f"  [green]✓[/green] {r.trial.hs_id} — {r.trial.outcome}")
+
+    agent = agent or os.environ.get("PRAXIS_AGENT", "codex")
+    kickoff = "Read AGENTS.md/CLAUDE.md and run the heuristic-learning loop to completion."
+
+    for hs in hs_list:
+        ws_dir = ws.runs_root / hs
+        ws.write_agent_brief(ws.load_config(hs))
+        cmd = (["claude", "-p", kickoff] if agent == "claude"
+               else ["codex", "exec", kickoff])
+        if launch:
+            log = open(ws_dir / "agent.log", "w")
+            subprocess.Popen(cmd, cwd=str(ws_dir), stdout=log, stderr=subprocess.STDOUT)
+            console.print(f"  [green]▶[/green] {hs} — launched ({agent}), logging to {ws_dir}/agent.log")
         else:
-            console.print(f"  [red]✗[/red] {r.run_dir.parent.name} — {r.error}")
+            console.print(f"  cd {ws_dir} && {' '.join(cmd)}")
+
+    if not launch:
+        console.print("\n[dim]Add --launch to spawn these headless agents in the background.[/dim]")
 
 
 @cli.command("status")
