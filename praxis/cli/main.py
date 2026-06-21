@@ -217,3 +217,7 @@ def mcp_config() -> None:
     }
     console.print("Add to ~/.claude/claude_desktop_config.json (or your project .mcp.json):\n")
     console.print(json.dumps(config, indent=2))
+
+
+if __name__ == "__main__":
+    cli()
